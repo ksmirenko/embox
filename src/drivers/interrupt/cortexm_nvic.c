@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <kernel/critical.h>
 #include <hal/reg.h>
@@ -26,8 +27,10 @@
 #define NVIC_PRIOR_BASE (NVIC_BASE + 0x300)
 
 #define SCB_BASE 0xe000ed00
-#define SCB_ICSR (SCB_BASE + 0x04)
-#define SCB_VTOR (SCB_BASE + 0x08)
+#define SCB_ICSR  (SCB_BASE + 0x04)
+#define SCB_VTOR  (SCB_BASE + 0x08)
+#define SCB_SHPR1 (SCB_BASE + 0x18)
+#define SCB_SHPR3 (SCB_BASE + 0x20)
 
 #define EXCEPTION_TABLE_SZ OPTION_GET(NUMBER,irq_table_size)
 
@@ -48,8 +51,35 @@ static uint32_t exception_table[EXCEPTION_TABLE_SZ] __attribute__ ((aligned (128
 extern void *trap_table_start;
 extern void *trap_table_end;
 
+extern void __irq_trampoline(void);
+extern void __pending_handle(void);
+extern void __pendsv_handle(void);
+
+struct cpu_saved_ctx {
+	uint32_t r[5];
+	uint32_t lr;
+	uint32_t pc;
+	uint32_t psr;
+};
+
+struct cpu_saved_ctx saved_ctx;
+uint32_t saved_lr;
+uint32_t saved_sp;
+uint32_t saved_r7;
+
 void interrupt_handle(void) {
 	uint32_t source;
+	struct cpu_saved_ctx *ctx;
+
+	__asm__ __volatile__ (
+		"mov %0, lr;\n\t"
+		"mov %1, sp;\n\t"
+	    : "=r"(saved_lr), "=r" (saved_sp)
+	);
+	/* 8 is size of the stuff saving on the stack when entering a function */
+	saved_r7 = *(uint32_t*)(saved_sp + 8);
+	/* 16 = 8 + sizeof(source) + sizeof (ctx) */
+	ctx = (struct cpu_saved_ctx*) (saved_sp + 16);
 
 	source = REG_LOAD(SCB_ICSR) & 0x1ff;
 
@@ -61,8 +91,22 @@ void interrupt_handle(void) {
 
 	critical_leave(CRITICAL_IRQ_HANDLER);
 
-	critical_dispatch_pending();
+	memcpy(&saved_ctx, ctx, sizeof saved_ctx);
+	saved_ctx.pc |= 1;
 
+	ctx->lr = (uint32_t) __pending_handle;
+	ctx->pc = ctx->lr;
+	/* It does not matter what value of psr is, just set up sime correct value.
+	 * This value only used to go further, after return from interrupt_handle,
+     * it will be changed to the correct one - saved_ctx.psr */
+	ctx->psr = 0x01000000;
+
+	/* Now return from interrupt context into __pending_handle */
+	__irq_trampoline();
+}
+
+void nvic_set_pendsv(void) {
+	REG_STORE(SCB_ICSR, 1 << 28);
 }
 
 static int nvic_init(void) {
@@ -73,6 +117,7 @@ static int nvic_init(void) {
 	for (i = 0; i < EXCEPTION_TABLE_SZ; i++) {
 		exception_table[i] = ((int) interrupt_handle) | 1;
 	}
+	exception_table[14] = ((int) __pendsv_handle) | 1;
 
 	/* load head from bootstrap table */
 	for (ptr = &trap_table_start, i = 0; ptr != &trap_table_end; ptr += 4, i++) {
@@ -85,6 +130,7 @@ static int nvic_init(void) {
 			(int) exception_table);
 
 	ipl_restore(ipl);
+
 	return 0;
 }
 

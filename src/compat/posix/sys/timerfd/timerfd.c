@@ -44,6 +44,7 @@ struct timerfd {
 	struct mutex mutex; /**< Global timerfd mutex */
 
 	struct idesc_timerfd read_desc; /**< The descriptor of the timer */
+	int fd;
 };
 
 // ----------------------------------------------------------------------------
@@ -153,17 +154,19 @@ out_err:
 }
 
 static void timerfd_close(struct idesc *idesc) {
-	struct idesc_timerfd *idesc_timerfd;
+	// struct idesc_timerfd *idesc_timerfd;
 	struct timerfd *timerfd;
 
 	assert(idesc);
 	assert(idesc->idesc_ops == &idesc_timerfd_ops);
 
-	idesc_timerfd = (struct idesc_timerfd *)idesc;
+	// idesc_timerfd = (struct idesc_timerfd *)idesc;
 	timerfd = idesc_to_timerfd(idesc);
 
 	mutex_lock(&timerfd->mutex);
-	idesc_timerfd->idesc.idesc_amode = 0;
+	printk("Closing fd: %d\n", timerfd->fd);
+	idesc_close(idesc, timerfd->fd);
+	// idesc_timerfd->idesc.idesc_amode = 0;
 	mutex_unlock(&timerfd->mutex);
 
 	timerfd_free(timerfd);
@@ -269,6 +272,8 @@ int timerfd_create(int clockid, int flags) {
 		result = ENOMEM;
 		goto out_err;
 	}
+	timerfd->fd = fd;
+	printk("Created fd: %d\n", fd);
 
 	return fd;
 
